@@ -9,81 +9,71 @@ import {
 } from "./tools/rooms.js";
 import {
   lookupTempo,
-  calculateSubdivisionsAndDelay,
-  TEMPO_TERMS,
-  GENRE_BPM_RANGES
+  calculateSubdivisionsAndDelay
 } from "./tools/tempo.js";
 import {
-  calculateTuningFrequencies,
-  INSTRUMENT_TUNINGS
-} from "./tools/tuner.js";
-import {
   generateSpeedTrainerRoutine,
-  getPolyrhythmGuide,
-  POLYRHYTHMS
+  getPolyrhythmGuide
 } from "./tools/practice.js";
 
 export function createMetronomifyMcpServer(): McpServer {
   const server = new McpServer({
     name: "metronomify-mcp",
-    version: "1.0.0"
+    version: "2.0.0"
   });
 
-  // 1. Tool: create_metronome_sync_room
-  server.tool(
-    "create_metronome_sync_room",
-    "Create a shared synchronized metronome room for musicians or band members to rehearse together at the exact same tempo in real-time. Returns room code, app deep links, and interactive widget preview.",
-    {
-      bpm: z.number().min(20).max(300).default(120).describe("Starting tempo in beats per minute (20-300)"),
-      beat: z.number().min(0).max(16).default(4).describe("Beats per measure (e.g. 4 for 4/4, 3 for 3/4, 0 for no accent)"),
-      soundMode: z.enum(["classic", "wood", "digital", "beep"]).optional().describe("Metronome click sound style")
-    },
-    async ({ bpm, beat, soundMode }) => {
-      const room = await createRoom({ bpm, soundMode });
-      const hostDeepLink = `metronomify://host?room=${room.roomCode}&bpm=${bpm}&beat=${beat}`;
-      const joinDeepLink = `metronomify://join?room=${room.roomCode}`;
-      const handoffUrl = `/open?target=host&room=${room.roomCode}&bpm=${bpm}&beat=${beat}`;
-      const widgetUrl = `/widget?mode=sync&room=${room.roomCode}&bpm=${bpm}&beat=${beat}`;
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                message: `✅ Metronomify szinkron szoba elkészült: ${room.roomCode}`,
-                roomCode: room.roomCode,
-                bpm,
-                beat: `${beat}/4`,
-                soundMode: room.soundMode,
-                widgetEmbedUrl: widgetUrl,
-                appHandoffUrl: handoffUrl,
-                appHostDeepLink: hostDeepLink,
-                appJoinDeepLink: joinDeepLink,
-                instructions: "A fenti gomb megnyomásával a telefon azonnal megnyitja az appban a szobát a beállított BPM-mel és QR kóddal."
-              },
-              null,
-              2
-            )
-          }
-        ]
-      };
-    }
-  );
-
-  // 2. Tool: setup_metronome
+  // 1. Tool: setup_metronome (All features matching Android app)
   server.tool(
     "setup_metronome",
-    "Configure and preview a metronome tempo (BPM) and beat accent pattern with playback and one-click app launch.",
+    "Configure and preview the full Metronomify metronome with 15-500 BPM, all subdivisions, classic/modern sound samples, speed acceleration training, and 1-click app handoff.",
     {
-      bpm: z.number().min(20).max(300).describe("Tempo in beats per minute"),
-      beat: z.number().min(0).max(16).default(4).describe("Beats per measure (4 = 4/4, 3 = 3/4)"),
-      start: z.boolean().default(true).describe("Whether the mobile app should immediately start playing upon open")
+      bpm: z.number().min(15).max(500).default(120).describe("Tempo in beats per minute (15-500)"),
+      beat: z.number().min(0).max(16).default(4).describe("Beats per measure (0 for no accent, 2, 3, 4, 5, 6, 7, 8, etc.)"),
+      rhythm: z
+        .enum([
+          "QUARTER_NOTE",
+          "EIGHTH_NOTES",
+          "TRIPLET",
+          "SIXTEENTH_NOTES",
+          "DOTTED_EIGHTH",
+          "QUARTER_TWO_EIGHTHS"
+        ])
+        .default("QUARTER_NOTE")
+        .describe("Rhythm subdivision pattern matching Metronomify"),
+      soundMode: z.enum(["classic", "modern"]).default("classic").describe("Sound sample: 'classic' (crisp tick) or 'modern' (wood click)"),
+      accelEnabled: z.boolean().default(false).describe("Enable speed training / gradual tempo acceleration"),
+      accelTargetBpm: z.number().min(20).max(500).optional().describe("Target end BPM for speed training"),
+      accelStepBpm: z.number().min(1).max(20).optional().describe("BPM increase per increment step"),
+      accelIntervalSec: z.number().min(2).max(120).optional().describe("Seconds between tempo increases")
     },
-    async ({ bpm, beat, start }) => {
-      const widgetUrl = `/widget?mode=metronome&bpm=${bpm}&beat=${beat}`;
-      const deepLink = `metronomify://assistant/metronome?bpm=${bpm}&beats=${beat}&start=${start}`;
-      const handoffUrl = `/open?target=metronome&bpm=${bpm}&beat=${beat}&start=${start}`;
+    async ({
+      bpm,
+      beat,
+      rhythm,
+      soundMode,
+      accelEnabled,
+      accelTargetBpm,
+      accelStepBpm,
+      accelIntervalSec
+    }) => {
+      const queryParams = new URLSearchParams({
+        mode: "metronome",
+        bpm: bpm.toString(),
+        beat: beat.toString(),
+        rhythm,
+        soundMode
+      });
+
+      if (accelEnabled) {
+        queryParams.set("accelEnabled", "true");
+        if (accelTargetBpm) queryParams.set("accelTargetBpm", accelTargetBpm.toString());
+        if (accelStepBpm) queryParams.set("accelStepBpm", accelStepBpm.toString());
+        if (accelIntervalSec) queryParams.set("accelIntervalSec", accelIntervalSec.toString());
+      }
+
+      const widgetUrl = `/widget?${queryParams.toString()}`;
+      const deepLink = `metronomify://assistant/metronome?bpm=${bpm}&beats=${beat}&pattern=${rhythm}&start=true`;
+      const handoffUrl = `/open?target=metronome&bpm=${bpm}&beat=${beat}&pattern=${rhythm}&start=true`;
 
       return {
         content: [
@@ -91,13 +81,18 @@ export function createMetronomifyMcpServer(): McpServer {
             type: "text",
             text: JSON.stringify(
               {
-                message: `⏱️ Metronóm előkészítve: ${bpm} BPM (${beat}/4 ütem)`,
+                message: `⏱️ Metronóm előkészítve: ${bpm} BPM (${beat > 0 ? beat + '/4' : 'Hangsúly nélkül'}, ${rhythm}, ${soundMode})`,
                 bpm,
                 beat,
+                rhythm,
+                soundMode,
+                speedAcceleration: accelEnabled
+                  ? { targetBpm: accelTargetBpm || bpm + 40, step: accelStepBpm || 5, intervalSec: accelIntervalSec || 10 }
+                  : "disabled",
                 widgetEmbedUrl: widgetUrl,
                 appHandoffUrl: handoffUrl,
                 appDeepLink: deepLink,
-                instructions: "A widgetben helyben tesztelhető a hang és a pulzálás, a 'Megnyitás a Metronomify-ban' gomb pedig közvetlenül átadja az appnak."
+                instructions: "A widget a telefonos app eredeti felületét mutatja valódi hangmintákkal és azonnali átadási gombbal."
               },
               null,
               2
@@ -108,28 +103,65 @@ export function createMetronomifyMcpServer(): McpServer {
     }
   );
 
-  // 3. Tool: setup_tuner
+  // 2. Tool: create_metronome_sync_room (Clean parameter card only, no complex playback)
+  server.tool(
+    "create_metronome_sync_room",
+    "Prepare a synchronized rehearsal room with requested tempo and rhythm parameters, returning a clean parameter overview and direct app sync button.",
+    {
+      bpm: z.number().min(15).max(500).default(120).describe("Starting tempo in BPM (15-500)"),
+      beat: z.number().min(0).max(16).default(4).describe("Beats per measure (e.g. 4 for 4/4)")
+    },
+    async ({ bpm, beat }) => {
+      const room = await createRoom({ bpm });
+      const widgetUrl = `/widget?mode=sync&room=${room.roomCode}&bpm=${bpm}&beat=${beat}`;
+      const hostDeepLink = `metronomify://host?room=${room.roomCode}&bpm=${bpm}&beat=${beat}`;
+      const handoffUrl = `/open?target=host&room=${room.roomCode}&bpm=${bpm}&beat=${beat}`;
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                message: `✅ Metronomify szinkron szoba előkészítve: ${room.roomCode}`,
+                roomCode: room.roomCode,
+                bpm,
+                beat: beat > 0 ? `${beat}/4` : "Hangsúly nélkül",
+                widgetEmbedUrl: widgetUrl,
+                appHandoffUrl: handoffUrl,
+                appHostDeepLink: hostDeepLink,
+                instructions: "A megnyitás gomb azonnal elindítja az appban a szobát a beállított BPM-mel és felhozza a QR kódos nézetet."
+              },
+              null,
+              2
+            )
+          }
+        ]
+      };
+    }
+  );
+
+  // 3. Tool: setup_tuner (Lists configured options, then button takes to app)
   server.tool(
     "setup_tuner",
-    "Prepare instrument tuning (Guitar, Bass, Ukulele, Strings) with custom A4 calibration (440Hz, 432Hz) and direct app handoff.",
+    "List and prepare instrument tuner options (A4 reference frequency, note naming system, sharps/flats, octave) with 1-click launch into the Metronomify Tuner.",
     {
-      instrument: z
-        .enum([
-          "guitar_standard",
-          "guitar_drop_d",
-          "bass_standard_4",
-          "ukulele_standard",
-          "violin_standard",
-          "cello_standard"
-        ])
-        .default("guitar_standard")
-        .describe("Instrument tuning preset"),
-      a4FrequencyHz: z.number().min(400).max(460).default(440).describe("A4 reference frequency in Hz")
+      a4FrequencyHz: z.number().min(415).max(465).default(440).describe("A4 reference frequency in Hertz (415-465, standard: 440)"),
+      namingSystem: z.enum(["standard", "solfege", "german"]).default("standard").describe("Note naming system: standard (C D E F G A B), solfege (Do Re Mi), or german (C D E F G A H)"),
+      accidental: z.enum(["sharps", "flats"]).default("sharps").describe("Preferred accidentals: 'sharps' (#) or 'flats' (b)"),
+      showOctave: z.boolean().default(true).describe("Display octave numbers (e.g. A4)")
     },
-    async ({ instrument, a4FrequencyHz }) => {
-      const tuningData = calculateTuningFrequencies(instrument, a4FrequencyHz);
-      const widgetUrl = `/widget?mode=tuner&tuning=${instrument}&a4=${a4FrequencyHz}`;
-      const deepLink = `metronomify://assistant/tuner`;
+    async ({ a4FrequencyHz, namingSystem, accidental, showOctave }) => {
+      const queryParams = new URLSearchParams({
+        mode: "tuner",
+        a4: a4FrequencyHz.toString(),
+        system: namingSystem,
+        accidental,
+        octave: showOctave.toString()
+      });
+
+      const widgetUrl = `/widget?${queryParams.toString()}`;
+      const deepLink = `metronomify://assistant/tuner?a4=${a4FrequencyHz}&system=${namingSystem}&accidental=${accidental}&octave=${showOctave}`;
       const handoffUrl = `/open?target=tuner`;
 
       return {
@@ -138,11 +170,16 @@ export function createMetronomifyMcpServer(): McpServer {
             type: "text",
             text: JSON.stringify(
               {
-                tuning: tuningData,
+                tunerSettings: {
+                  a4FrequencyHz,
+                  namingSystem: namingSystem === "solfege" ? "Szolmizáció (Do Re Mi)" : namingSystem === "german" ? "Német (C D E F G A H)" : "Standard (C D E F G A B)",
+                  accidentalPreference: accidental === "flats" ? "Bék (b / Flats)" : "Keresztek (# / Sharps)",
+                  showOctaveNumber: showOctave
+                },
                 widgetEmbedUrl: widgetUrl,
                 appHandoffUrl: handoffUrl,
                 appDeepLink: deepLink,
-                instructions: "A widgetben megszólaltathatóak a referencia hangok, a gomb pedig az app beépített Tuner képernyőjére visz."
+                instructions: "A widget áttekintést ad a kiválasztott hangoló paraméterekről, a gomb pedig azonnal átadja azokat az appnak."
               },
               null,
               2
@@ -153,16 +190,15 @@ export function createMetronomifyMcpServer(): McpServer {
     }
   );
 
-  // 4. Tool: setup_audio_recorder
+  // 4. Tool: setup_audio_recorder (Direct handoff only)
   server.tool(
     "setup_audio_recorder",
-    "Prepare a new audio recording session with project title and launch the Metronomify Recorder.",
+    "Open the Metronomify studio audio recorder in the Android app.",
     {
-      title: z.string().default("Új próba felvétel").describe("Recording title or song name"),
-      bpm: z.number().optional().describe("Associated song BPM")
+      title: z.string().optional().describe("Optional recording title")
     },
-    async ({ title, bpm }) => {
-      const widgetUrl = `/widget?mode=recorder&title=${encodeURIComponent(title)}${bpm ? `&bpm=${bpm}` : ''}`;
+    async ({ title }) => {
+      const widgetUrl = `/widget?mode=recorder${title ? `&title=${encodeURIComponent(title)}` : ''}`;
       const deepLink = `metronomify://assistant/recorder`;
       const handoffUrl = `/open?target=recorder`;
 
@@ -172,12 +208,11 @@ export function createMetronomifyMcpServer(): McpServer {
             type: "text",
             text: JSON.stringify(
               {
-                title,
-                bpm: bpm || "none",
+                message: "🎙️ Metronomify Hangrögzítő megnyitása",
                 widgetEmbedUrl: widgetUrl,
                 appHandoffUrl: handoffUrl,
                 appDeepLink: deepLink,
-                instructions: "A gomb megnyomásával a Metronomify azonnal megnyitja a stúdió minőségű hangrögzítőt."
+                instructions: "Kattints a gombra a stúdió minőségű hangrögzítő azonnali megnyitásához az Android appban."
               },
               null,
               2
@@ -188,99 +223,10 @@ export function createMetronomifyMcpServer(): McpServer {
     }
   );
 
-  // 5. Tool: get_sync_room_status
-  server.tool(
-    "get_sync_room_status",
-    "Retrieve the current tempo (BPM), active playback status, and participants count for an existing Metronomify rehearsal room.",
-    {
-      roomCode: z.string().length(6).describe("The 6-digit Metronomify room code")
-    },
-    async ({ roomCode }) => {
-      const room = await getRoom(roomCode);
-      if (!room) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                status: "not_found",
-                message: `Room ${roomCode} is not currently active or has expired.`
-              })
-            }
-          ]
-        };
-      }
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(room, null, 2)
-          }
-        ]
-      };
-    }
-  );
-
-  // 6. Tool: update_room_tempo
-  server.tool(
-    "update_room_tempo",
-    "Adjust or change the tempo (BPM) of an active synchronized rehearsal room in real-time across all connected musician devices.",
-    {
-      roomCode: z.string().length(6).describe("The 6-digit room code"),
-      bpm: z.number().min(20).max(300).describe("New tempo in beats per minute")
-    },
-    async ({ roomCode, bpm }) => {
-      const updated = await updateRoomTempo(roomCode, bpm);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                message: `⚡ Tempo updated to ${bpm} BPM for room ${roomCode}`,
-                room: updated
-              },
-              null,
-              2
-            )
-          }
-        ]
-      };
-    }
-  );
-
-  // 7. Tool: control_room_playback
-  server.tool(
-    "control_room_playback",
-    "Start or stop playback for all musicians connected to a synchronized Metronomify metronome room.",
-    {
-      roomCode: z.string().length(6).describe("The 6-digit room code"),
-      action: z.enum(["start", "stop"]).describe("Play action: 'start' to begin clicking, 'stop' to pause")
-    },
-    async ({ roomCode, action }) => {
-      const updated = await controlRoomPlayback(roomCode, action);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                message: `▶️ Room ${roomCode} playback ${action === "start" ? "started" : "stopped"}`,
-                room: updated
-              },
-              null,
-              2
-            )
-          }
-        ]
-      };
-    }
-  );
-
-  // 8. Tool: lookup_musical_tempo
+  // 5. Tool: lookup_musical_tempo
   server.tool(
     "lookup_musical_tempo",
-    "Find standard BPM ranges, classical Italian tempo markings (Allegro, Andante, Presto, Adagio), and typical tempo ranges for musical genres.",
+    "Find standard BPM ranges and Italian tempo markings (Allegro, Andante, Presto, Adagio) and genre BPM guides.",
     {
       query: z.string().describe("Musical term or genre")
     },
@@ -297,7 +243,7 @@ export function createMetronomifyMcpServer(): McpServer {
     }
   );
 
-  // 9. Tool: calculate_beat_delays_and_subdivisions
+  // 6. Tool: calculate_beat_delays_and_subdivisions
   server.tool(
     "calculate_beat_delays_and_subdivisions",
     "Calculate precise millisecond timings for quarter notes, eighth notes, sixteenth notes, triplets, and delay effect sync at any target BPM.",
@@ -317,15 +263,15 @@ export function createMetronomifyMcpServer(): McpServer {
     }
   );
 
-  // 10. Tool: generate_speed_trainer_routine
+  // 7. Tool: generate_speed_trainer_routine
   server.tool(
     "generate_speed_trainer_routine",
     "Generate a structured tempo practice routine that gradually ramps up BPM to build speed and accuracy for instrument practice.",
     {
-      startBpm: z.number().min(30).max(280).describe("Starting warmup tempo"),
-      targetBpm: z.number().min(40).max(300).describe("Final goal tempo"),
+      startBpm: z.number().min(15).max(450).describe("Starting warmup tempo"),
+      targetBpm: z.number().min(20).max(500).describe("Final goal tempo"),
       durationMinutes: z.number().min(5).max(120).default(15).describe("Total practice session length in minutes"),
-      stepBpm: z.number().min(2).max(20).default(5).describe("BPM increase per increment step")
+      stepBpm: z.number().min(1).max(20).default(5).describe("BPM increase per increment step")
     },
     async ({ startBpm, targetBpm, durationMinutes, stepBpm }) => {
       const routine = generateSpeedTrainerRoutine(startBpm, targetBpm, durationMinutes, stepBpm);
@@ -340,7 +286,7 @@ export function createMetronomifyMcpServer(): McpServer {
     }
   );
 
-  // 11. Tool: get_polyrhythm_guide
+  // 8. Tool: get_polyrhythm_guide
   server.tool(
     "get_polyrhythm_guide",
     "Get explanation, counting patterns, and mnemonic memory phrases for polyrhythms (e.g. 3:2, 4:3, 5:4).",
@@ -360,7 +306,7 @@ export function createMetronomifyMcpServer(): McpServer {
     }
   );
 
-  // Resource: active rooms
+  // Active rooms resource
   server.resource(
     "active-rooms",
     "metronomify://rooms/active",

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import path from "path";
 import QRCode from "qrcode";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { createMetronomifyMcpServer } from "./mcp-server.js";
@@ -13,6 +14,9 @@ const PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=hu.wind.me
 
 app.use(cors({ origin: "*" }));
 app.use(express.json());
+
+// Serve static sounds if needed
+app.use("/sounds", express.static(path.resolve("public/sounds")));
 
 // Active SSE Transports indexed by sessionId
 const activeTransports = new Map<string, SSEServerTransport>();
@@ -34,23 +38,44 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Interactive HTML5 / iFrame Widget for Gemini Connected Apps
+// Interactive HTML5 / iFrame Widget with Metronomify Native Design
 app.get("/widget", async (req, res) => {
   const bpm = parseInt((req.query.bpm as string) || "120", 10);
   const beat = req.query.beat !== undefined ? parseInt(req.query.beat as string, 10) : 4;
   const room = (req.query.room as string) || undefined;
   const mode = (req.query.mode as any) || (room ? "sync" : "metronome");
-  const tuning = (req.query.tuning as string) || "guitar_standard";
+  const rhythm = (req.query.rhythm as any) || "QUARTER_NOTE";
+  const soundMode = (req.query.soundMode as any) || "classic";
+
+  const accelEnabled = req.query.accelEnabled === "true";
+  const accelTargetBpm = req.query.accelTargetBpm ? parseInt(req.query.accelTargetBpm as string, 10) : undefined;
+  const accelStepBpm = req.query.accelStepBpm ? parseInt(req.query.accelStepBpm as string, 10) : undefined;
+  const accelIntervalSec = req.query.accelIntervalSec ? parseInt(req.query.accelIntervalSec as string, 10) : undefined;
+
+  // Tuner options
   const a4 = parseInt((req.query.a4 as string) || "440", 10);
-  const title = (req.query.title as string) || "Új felvétel";
+  const namingSystem = (req.query.namingSystem as any) || (req.query.system as any) || "standard";
+  const accidental = (req.query.accidental as any) || "sharps";
+  const showOctave = req.query.showOctave !== "false" && req.query.octave !== "false";
+
+  // Recorder options
+  const title = (req.query.title as string) || "Új próba felvétel";
 
   const html = await renderMetronomeWidget({
     mode,
     bpm,
     beat,
+    rhythm,
+    soundMode,
+    accelEnabled,
+    accelTargetBpm,
+    accelStepBpm,
+    accelIntervalSec,
     room,
-    tuning,
     a4,
+    namingSystem,
+    accidental,
+    showOctave,
     title
   });
 
@@ -59,14 +84,14 @@ app.get("/widget", async (req, res) => {
 });
 
 // Web Redirector / Open Handoff page
-// Opens app directly via deep link on Android, redirects to Play Store if not installed, or shows QR code on Desktop
 app.get("/open", async (req, res) => {
   const target = (req.query.target as string) || "metronome";
   const bpm = req.query.bpm || "120";
   const beat = req.query.beat || req.query.beats || "4";
   const room = req.query.room || req.query.code || "";
+  const pattern = req.query.pattern || "QUARTER_NOTE";
 
-  let deepLink = `metronomify://assistant/metronome?bpm=${bpm}&beats=${beat}&start=true`;
+  let deepLink = `metronomify://assistant/metronome?bpm=${bpm}&beats=${beat}&pattern=${pattern}&start=true`;
   if (target === "sync" || target === "host" || target === "room") {
     deepLink = `metronomify://host?room=${room}&bpm=${bpm}&beat=${beat}`;
   } else if (target === "join") {
@@ -79,7 +104,7 @@ app.get("/open", async (req, res) => {
 
   let qrDataUrl = "";
   try {
-    qrDataUrl = await QRCode.toDataURL(deepLink, { width: 280, margin: 1 });
+    qrDataUrl = await QRCode.toDataURL(deepLink, { width: 280, margin: 1, color: { dark: "#1C1F2E", light: "#FFFFFF" } });
   } catch (e) {
     console.error("QR Error:", e);
   }
@@ -91,30 +116,34 @@ app.get("/open", async (req, res) => {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Metronomify Megnyitása</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&display=swap" rel="stylesheet">
   <style>
-    body { background: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; text-align: center; }
-    .card { background: #1e293b; border-radius: 24px; padding: 32px 24px; max-width: 420px; width: 100%; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
-    h2 { margin: 0 0 8px; color: #ffffff; }
-    p { color: #94a3b8; font-size: 0.95rem; line-height: 1.5; margin: 0 0 20px; }
-    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: #6366f1; color: white; padding: 14px 28px; border-radius: 14px; text-decoration: none; font-weight: 700; font-size: 1.05rem; box-shadow: 0 4px 14px rgba(99,102,241,0.4); margin-bottom: 16px; }
-    .btn:hover { background: #4f46e5; }
-    .qr-box { background: white; border-radius: 16px; padding: 12px; display: inline-block; margin: 16px 0; }
-    .play-link { color: #38bdf8; font-size: 0.85rem; text-decoration: underline; }
+    body { background: #141118; color: #FFFFFF; font-family: 'Montserrat', sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; text-align: center; }
+    .card { background: #201F25; border-radius: 28px; padding: 32px 24px; max-width: 400px; width: 100%; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 16px 40px rgba(0,0,0,0.5); }
+    h2 { margin: 0 0 8px; color: #4169E1; font-weight: 800; }
+    p { color: #AAAAAA; font-size: 0.9rem; line-height: 1.5; margin: 0 0 20px; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: #4169E1; color: white; padding: 14px 28px; border-radius: 28px; text-decoration: none; font-weight: 800; font-size: 1rem; box-shadow: 0 4px 14px rgba(65,105,225,0.4); margin-bottom: 14px; transition: transform 0.12s ease; }
+    .btn:hover { transform: scale(0.97); }
+    .btn:active { transform: scale(0.93); }
+    .qr-box { background: white; border-radius: 20px; padding: 12px; display: inline-block; margin: 16px 0; }
+    .play-link { color: #D0DDFE; font-size: 0.8rem; text-decoration: underline; font-weight: 600; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div style="font-size: 3rem; margin-bottom: 12px;">🎵</div>
-    <h2>Megnyitás a Metronomify-ban</h2>
-    <p>A kért beállítások (BPM: <strong>${bpm}</strong>, Ütem: <strong>${beat}/4</strong>${room ? `, Szoba: <strong>${room}</strong>` : ''}) átadása folyamatban...</p>
+    <div style="font-size: 3rem; margin-bottom: 12px;">⏱️</div>
+    <h2>Metronomify</h2>
+    <p>A kért beállítások átadása a telefonnak folyamatban...</p>
     
     <div id="mobile-area">
-      <a href="${deepLink}" class="btn" id="open-btn">Megnyitás az Appban</a>
-      <div><a href="${PLAY_STORE_URL}" class="play-link" target="_blank">Alkalmazás letöltése a Google Play-ről</a></div>
+      <a href="${deepLink}" class="btn">Megnyitás az Appban</a>
+      <div><a href="${PLAY_STORE_URL}" class="play-link" target="_blank">Letöltés a Google Play Áruházból</a></div>
     </div>
 
-    <div id="desktop-area" style="display: none; margin-top: 10px;">
-      <p style="font-size: 0.85rem; color: #cbd5e1;">Olvasd be a telefonoddal az app azonnali megnyitásához:</p>
+    <div id="desktop-area" style="display: none;">
+      <p style="font-size: 0.85rem; color: #FFFFFF; margin-bottom: 8px;">Olvasd be a telefonoddal az app azonnali megnyitásához:</p>
       ${qrDataUrl ? `<div class="qr-box"><img src="${qrDataUrl}" width="240" height="240" alt="QR code"></div>` : ''}
     </div>
   </div>
@@ -148,40 +177,20 @@ app.get("/tools", (req, res) => {
     organization: "WIND Kft.",
     capabilities: [
       {
+        name: "setup_metronome",
+        intent: "Full-featured metronome (15-500 BPM, all subdivisions, classic/modern sounds, speed acceleration, app handoff)"
+      },
+      {
         name: "create_metronome_sync_room",
-        intent: "Real-time collaborative rehearsal room creation for musicians"
+        intent: "Synchronized rehearsal room parameter setup and 1-click app sync launch"
       },
       {
-        name: "get_sync_room_status",
-        intent: "Monitor tempo, playback state, and connected members"
+        name: "setup_tuner",
+        intent: "Tuner options listing (A4 Hz, note naming system, sharps/flats, octave) with app handoff"
       },
       {
-        name: "update_room_tempo",
-        intent: "Change BPM of connected rehearsal room live"
-      },
-      {
-        name: "control_room_playback",
-        intent: "Synchronized start / stop for all connected musician phones"
-      },
-      {
-        name: "lookup_musical_tempo",
-        intent: "Tempo markings (Allegro, Presto) and genre BPM guides"
-      },
-      {
-        name: "calculate_beat_delays_and_subdivisions",
-        intent: "Precise note values (triplets, dotted, 16ths) and audio delay ms"
-      },
-      {
-        name: "get_instrument_tuning_reference",
-        intent: "Metronomify Tuner frequencies (Hz) for Guitar, Bass, Ukulele, Strings"
-      },
-      {
-        name: "generate_speed_trainer_routine",
-        intent: "Step-by-step tempo escalation practice routine"
-      },
-      {
-        name: "get_polyrhythm_guide",
-        intent: "Polyrhythm instructions, counting, and mnemonic mnemonics"
+        name: "setup_audio_recorder",
+        intent: "One-click studio audio recorder app handoff"
       }
     ],
     endpoints: {
@@ -245,51 +254,6 @@ app.post("/v1/messages", async (req, res) => {
       res.status(500).json({ error: err.message });
     }
   }
-});
-
-// Landing Page
-app.get("/", (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <title>Metronomify MCP Server</title>
-        <meta charset="utf-8">
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; line-height: 1.6; background: #0f172a; color: #f8fafc; }
-          a { color: #818cf8; text-decoration: none; }
-          a:hover { text-decoration: underline; }
-          code, pre { background: #1e293b; padding: 3px 6px; border-radius: 6px; font-family: monospace; }
-          pre { padding: 16px; overflow-x: auto; }
-          .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 0.85rem; background: #312e81; color: #c7d2fe; margin-right: 8px; }
-          .card { background: #1e293b; border-radius: 12px; padding: 20px; margin: 20px 0; border: 1px solid rgba(255,255,255,0.08); }
-        </style>
-      </head>
-      <body>
-        <h1>🎵 Metronomify MCP Server</h1>
-        <p><span class="badge">Google Connected Apps Ready</span> <span class="badge">MCP Protocol 2024-11-05</span></p>
-        <p>This Model Context Protocol (MCP) server enables Google Gemini and other AI agents to manage synchronized rehearsal rooms, calculate tempo and delay timings, generate speed routines, and provide tuner pitch reference for musicians.</p>
-        
-        <div class="card">
-          <h3>🔗 MCP Endpoints</h3>
-          <ul>
-            <li><strong>SSE Endpoint:</strong> <code>/v1/sse</code></li>
-            <li><strong>Messages Endpoint:</strong> <code>/v1/messages</code></li>
-            <li><strong>Interactive UI Widget (iFrames):</strong> <a href="/widget" target="_blank"><code>/widget</code></a></li>
-            <li><strong>Handoff Open / QR Redirect:</strong> <a href="/open?target=metronome&bpm=120&beat=4" target="_blank"><code>/open</code></a></li>
-            <li><strong>Tool Catalog:</strong> <a href="/tools"><code>/tools</code></a></li>
-            <li><strong>Health Check:</strong> <a href="/health"><code>/health</code></a></li>
-          </ul>
-        </div>
-
-        <div class="card">
-          <h3>📱 Gemini Developer Mode Setup</h3>
-          <p>To connect locally in the Gemini app:</p>
-          <pre>URL: http://&lt;your-server-ip-or-tunnel&gt;:${PORT}/v1/sse</pre>
-        </div>
-      </body>
-    </html>
-  `);
 });
 
 app.listen(PORT, () => {
